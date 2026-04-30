@@ -1,10 +1,11 @@
 import {
-	Body,
 	Controller,
+	Headers,
 	HttpCode,
 	HttpStatus,
 	Ip,
-	Post
+	Post,
+	Req
 } from '@nestjs/common'
 import { ApiOkResponse, ApiOperation } from '@nestjs/swagger'
 
@@ -12,9 +13,7 @@ import { WebhookService } from './webhook.service'
 
 @Controller('webhook')
 export class WebhookController {
-	public constructor(
-		private readonly webhookService: WebhookService
-	) {}
+	public constructor(private readonly webhookService: WebhookService) {}
 
 	@ApiOperation({
 		summary: 'Monobank Webhook',
@@ -28,6 +27,20 @@ export class WebhookController {
 	})
 	@Post('monobank')
 	@HttpCode(HttpStatus.OK)
-	public async monobank(@Body() payload: any, @Ip() ip: string) {
+	public async monobank(
+		@Req() req: any,
+		@Headers('x-sign') xSign: string,
+		@Ip() ip: string
+	) {
+		const rawBody = req.rawBody?.toString('utf8')
+
+		await this.webhookService.handleMonobank({
+			rawBody,
+			signature: xSign,
+			payload: JSON.parse(rawBody),
+			ip
+		})
+
+		return { ok: true }
 	}
 }

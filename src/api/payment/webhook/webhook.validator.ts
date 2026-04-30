@@ -1,6 +1,5 @@
 import { Injectable, Logger, UnauthorizedException } from '@nestjs/common'
 import CidrMatcher from 'cidr-matcher'
-import { createHmac } from 'crypto'
 
 import { IS_DEV_ENV } from '@/shared/utils'
 
@@ -8,90 +7,26 @@ import { IS_DEV_ENV } from '@/shared/utils'
 export class WebhookValidator {
 	private readonly logger = new Logger(WebhookValidator.name)
 
-	private readonly TRUSTED_YOOKASSA_IPS = new CidrMatcher([
-		'185.71.76.0/27',
-		'185.71.77.0/27',
-		'77.75.153.0/25',
-		'77.75.156.11/32',
-		'77.75.156.35/32',
-		'77.75.154.128/25',
-		'2a02:5180::/32'
+	private readonly TRUSTED_MONOBANK_IPS = new CidrMatcher([
+		'35.158.201.27/32',
+		'52.58.160.42/32',
+		'35.158.31.50/32',
+		'35.158.251.173/32'
 	])
 
-	private readonly TRUSTED_HELEKET_IPS = ['31.133.220.8']
-
-	public validateYooKassa(ip: string) {
+	public validatorMonobank(ip: string) {
 		if (IS_DEV_ENV) {
-			this.logger.debug(`Skipping YooKassa IP validation in dev mode`)
-			return
-		}
-
-		if (!this.TRUSTED_YOOKASSA_IPS.contains(ip)) {
-			this.logger.error(`❌ Invalid YooKassa IP: ${ip}`)
-			throw new UnauthorizedException(`Invalid YooKassa IP: ${ip}`)
-		}
-
-		this.logger.log(`✅ YooKassa IP validated: ${ip}`)
-	}
-
-	public validateProdamus(body: any, signature: string, secretKey: string) {
-		if (!signature) {
-			this.logger.error(`❌ Missing Prodamus signature`)
-			throw new UnauthorizedException('Missing Prodamus signature')
-		}
-
-		this.logger.debug(`Prodamus signature received: ${signature}`)
-
-		const sortObject = (obj: any): any => {
-			if (Array.isArray(obj)) return obj.map(sortObject)
-
-			if (obj !== null && typeof obj === 'object')
-				return Object.keys(obj)
-					.sort()
-					.reduce((acc, key) => {
-						acc[key] = sortObject(obj[key])
-						return acc
-					}, {} as any)
-
-			return obj
-		}
-
-		const sorted = sortObject(body)
-
-		this.logger.debug(`Sorted payload: ${JSON.stringify(sorted)}`)
-
-		let json = JSON.stringify(sorted)
-		json = json.replace(/\//g, '\\/')
-
-		this.logger.debug(`Normalized JSON for HMAC: ${json}`)
-
-		const expected = createHmac('sha256', secretKey)
-			.update(json)
-			.digest('hex')
-
-		this.logger.debug(`Generated HMAC: ${expected}`)
-
-		if (expected !== signature) {
-			this.logger.error(
-				`❌ Invalid Prodamus signature. Expected=${expected}, Received=${signature}`
+			this.logger.log(
+				'Skipping Monobank IP validation in development mode'
 			)
-			throw new UnauthorizedException('Invalid Prodamus signature')
-		}
-
-		this.logger.log(`✅ Prodamus signature verified successfully`)
-	}
-
-	public validateHeleket(ip: string) {
-		if (IS_DEV_ENV) {
-			this.logger.debug(`Skipping Heleket IP validation in dev mode`)
 			return
 		}
 
-		if (!this.TRUSTED_HELEKET_IPS.includes(ip)) {
-			this.logger.error(`❌ Invalid Heleket IP: ${ip}`)
-			throw new UnauthorizedException(`Invalid Heleket IP: ${ip}`)
+		if (!this.TRUSTED_MONOBANK_IPS.contains(ip)) {
+			this.logger.error(`❌ Invalid Monobank IP: ${ip}`)
+			throw new UnauthorizedException(`Invalid Monobank IP: ${ip}`)
 		}
 
-		this.logger.log(`✅ Heleket IP validated: ${ip}`)
+		this.logger.log(`✅ Monobank IP validated: ${ip}`)
 	}
 }

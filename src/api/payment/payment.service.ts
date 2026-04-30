@@ -5,288 +5,181 @@ import {
 } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
 import { PaymentMethod, type User } from '@prisma/generated'
-import { lookup } from 'geoip-country'
-import {
-	ConfirmationEnum,
-	type CreatePaymentRequest,
-	CurrencyEnum,
-	PaymentMethodsEnum,
-	YookassaService
-} from 'nestjs-yookassa'
-import { VatCodesEnum } from 'nestjs-yookassa/dist/modules/receipt/enums'
+import { MonobankService } from 'nestjs-monobank'
 
-import type { AllConfigs } from '@/config/definitions'
+import { ManagerBotService } from '@/bots/manager/manager.bot.service'
 import { PrismaService } from '@/infra/prisma/prisma.service'
+import {
+	LiqPayAction,
+	LiqPayCurrency,
+	LiqPayLanguage
+} from '@/libs/liqpay/enums'
+import { LiqpayService } from '@/libs/liqpay/liqpay.service'
+import { MailService } from '@/libs/mail/mail.service'
 
 import { InitPaymentRequest } from './dto'
 
 @Injectable()
 export class PaymentService {
-	private readonly HOSTS_APP: string
-	private readonly HOSTS_REST: string
-
-	private readonly INTERNATIONAL_METHODS: string[]
-	private readonly CRYPTO_BLOCKED_COUNTRIES: string[]
-
 	public constructor(
 		private readonly prismaService: PrismaService,
-		private readonly configService: ConfigService<AllConfigs>,
-		private readonly yookassaService: YookassaService,
-	) {
-		this.HOSTS_APP = this.configService.get('hosts.app', { infer: true })
-		this.HOSTS_REST = this.configService.get('hosts.rest', { infer: true })
+		private readonly monobankService: MonobankService,
+		private readonly liqpayService: LiqpayService,
+		private readonly botService: ManagerBotService,
+		private readonly configService: ConfigService,
+		private readonly mailService: MailService
+	) {}
 
-		this.INTERNATIONAL_METHODS = [
-			'ACkztjp', // весь мир, кроме РФ
-			'ACf', // СНГ, кроме РФ
-			'ACUSDGTL', // USD worldwide (кроме РФ)
-			'ACEURGTL', // EUR worldwide (кроме РФ)
-			'ACBYNGTL', // Беларусь
-			'ACUSDKB', // USD worldwide
-			'ACEURKB' // EUR worldwide
-		]
+	public async create(dto: InitPaymentRequest, user?: User) {
+		const { method, orderId, email } = dto
 
-		this.CRYPTO_BLOCKED_COUNTRIES = [
-			'RU',
-			'CN',
-			'EG',
-			'DZ',
-			'AF',
-			'BD',
-			'TN',
-			'NP',
-			'MA',
-			'BO',
-			'IQ',
-			'PK',
-			'KW',
-			'NC',
-			'XK',
-			'MM',
-			'MZ',
-			'BI',
-			'GN',
-			'HT',
-			'HN'
-		]
-	}
-
-	public async getAvailableMethods(ip: string) {
-		const countryCode = this.getCountryCode(ip)
-
-		const methods = [
-			{
-				id: PaymentMethod.BANK_CARD,
-				name: 'Банковская карта',
-				description: 'Оплата картой российских банков',
-				isAvailable: true
-			},
-			{
-				id: PaymentMethod.SBP,
-				name: 'СБП',
-				description: 'Оплата через Систему быстрых платежей',
-				isAvailable: true
-			},
-			{
-				id: PaymentMethod.T_PAY,
-				name: 'T-Pay',
-				description: 'Оплата через приложение Т-Банка',
-				isAvailable: true
-			},
-			{
-				id: PaymentMethod.INTERNATIONAL_CARD,
-				name: 'Международные карты',
-				description: 'Оплата картой зарубежных банков',
-				isAvailable: true
-			},
-			{
-				id: PaymentMethod.CRYPTO,
-				name: 'Криптовалюта',
-				description: 'Оплата с помощью BTC, USDT, TON',
-				isAvailable: true
+		const order = await this.prismaService.order.findUnique({
+			where: { id: orderId },
+			include: {
+				products: true,
+				mainClientInfo: true
 			}
-			// {
-			// 	id: PaymentMethod.TELEGRAM_STARS,
-			// 	name: 'Telegram Stars',
-			// 	description: 'Оплата подписки через звёзды Telegram',
-			// 	isAvailable: false
-			// }
-		]
+		})
 
-		return methods.filter(
-			m =>
-				!(
-					m.id === PaymentMethod.CRYPTO &&
-					this.CRYPTO_BLOCKED_COUNTRIES.includes(countryCode)
-				)
-		)
-	}
+		if (user) {
+			if (!user.email) {
+				if (!email)
+					throw new BadRequestException(
+						'Email is required to proceed with the payment'
+					)
 
-	public async create(dto: InitPaymentRequest, user: User) {
-		const { method, email } = dto
+				const emailExists =
+					await this.prismaService.user.findUnique({
+						where: {
+							email
+						}
+					})
 
-		if (!user.email) {
-			if (!email)
-				throw new BadRequestException(
-					'Email is required to proceed with the payment'
-				)
+				if (emailExists)
+					throw new ConflictException(
+						'This email is already in use'
+					)
 
-			const emailExists = await this.prismaService.user.findUnique({
-				where: {
-					email
-				}
-			})
+				const updatedUser =
+					await this.prismaService.user.update({
+						where: {
+							id: user.id
+						},
+						data: {
+							email
+						}
+					})
 
-			if (emailExists)
-				throw new ConflictException('This email is already in use')
-
-			const updatedUser = await this.prismaService.user.update({
-				where: {
-					id: user.id
-				},
-				data: {
-					email
-				}
-			})
-
-			user = updatedUser
+				user = updatedUser
+			}
 		}
 
 		const payment = await this.prismaService.payment.create({
 			data: {
-				amount: this.getPriceForMethod(method),
-				currency: 'RUB',
+				amount: order.total,
 				method,
-				user: {
+				invoiceId: this.generateInvoiceId(),
+				user: user ? { connect: { id: user.id } } : undefined,
+				order: {
 					connect: {
-						id: user.id
+						id: order.id
 					}
 				}
 			}
 		})
 
+		await this.prismaService.order.update({
+			where: { id: order.id },
+			data: { paymentId: payment.id }
+		})
+
 		let providerResponse
 
 		switch (method) {
-			case PaymentMethod.BANK_CARD:
-				providerResponse = await this.yookassaService.payments.create(
-					this.createYookassaPaymentData(
-						payment.id,
-						user,
-						PaymentMethodsEnum.BANK_CARD
-					)
-				)
-				break
-			case PaymentMethod.SBP:
-				providerResponse = await this.yookassaService.payments.create(
-					this.createYookassaPaymentData(
-						payment.id,
-						user,
-						PaymentMethodsEnum.SBP
-					)
-				)
-				break
-			case PaymentMethod.T_PAY:
-				providerResponse = await this.yookassaService.payments.create(
-					this.createYookassaPaymentData(
-						payment.id,
-						user,
-						PaymentMethodsEnum.T_BANK
-					)
-				)
-				break
-			case PaymentMethod.SBER_PAY:
-				providerResponse = await this.yookassaService.payments.create(
-					this.createYookassaPaymentData(
-						payment.id,
-						user,
-						PaymentMethodsEnum.SBERBANK
-					)
-				)
-				break
-			case PaymentMethod.INTERNATIONAL_CARD:
-			default:
-				throw new BadRequestException('Unsupported payment provider')
-		}
-
-		if (payment.method !== PaymentMethod.INTERNATIONAL_CARD)
-			await this.prismaService.payment.update({
-				where: {
-					id: payment.id
-				},
-				data: {
-					providerPaymentId:
-						providerResponse?.id ?? providerResponse?.uuid,
-					metadata: providerResponse
-				}
-			})
-
-		return {
-			url:
-				providerResponse?.confirmation?.confirmation_url ||
-				providerResponse?.url
-		}
-	}
-
-	private createYookassaPaymentData(
-		paymentId: string,
-		user: User,
-		paymentMethod: PaymentMethodsEnum
-	): CreatePaymentRequest {
-		return {
-			amount: {
-				value: 449,
-				currency: CurrencyEnum.RUB
-			},
-			description: 'Оплата премиум-подписки на 1 месяц',
-			receipt: {
-				customer: {
-					email: user.email
-				},
-				items: [
-					{
-						amount: {
-							value: 449,
-							currency: CurrencyEnum.RUB
+			case PaymentMethod.MONOBANK:
+				providerResponse =
+					await this.monobankService.invoices.create({
+						amount: order.total * 100,
+						merchantPaymInfo: {
+							reference: payment.invoiceId,
+							destination:
+								'Оплата вашого замовлення',
+							basketOrder: order.products.map(
+								product => ({
+									name: product.name,
+									qty: product.quantity,
+									sum:
+										product.price *
+										product.quantity *
+										100,
+									icon: product.imageUrl,
+									unit: 'шт.',
+									code: product.id
+								})
+							)
 						},
-						description: 'Премиум-доступ на 30 дней',
-						quantity: 1,
-						vat_code: VatCodesEnum.NDS_NONE
-					}
-				]
-			},
-			payment_method_data: {
-				// @ts-ignore
-				type: paymentMethod
-			},
-			confirmation: {
-				type: ConfirmationEnum.REDIRECT,
-				return_url: `${this.HOSTS_APP}/payment/success`
-			},
-			save_payment_method: true,
-			...(paymentMethod === 'sbp' && {
-				capture: true
-			}),
-			metadata: {
-				payment_id: paymentId
-			},
-			merchant_customer_id: user.id
-		}
-	}
+						webHookUrl: `${this.configService.get<string>('HOSTS_REST')}/api/v1/webhook/monobank`,
+						redirectUrl: `${this.configService.get<string>('HOSTS_APP')}/payment/success`,
+						validity: 3600 * 24 * 7,
+						paymentType: 'debit'
+					})
+				break
+			case PaymentMethod.LIQPAY:
+				providerResponse = await this.liqpayService.create({
+					action: LiqPayAction.INVOICE,
+					version: 3,
+					public_key: this.configService.get<string>(
+						'LIQPAY_API_KEY_PUBLIC'
+					),
+					description: 'Оплата вашого замовлення',
+					email: order.mainClientInfo.email,
+					currency: LiqPayCurrency.UAH,
+					amount: order.total,
+					order_id: payment.invoiceId,
+					language: LiqPayLanguage.UK,
+					rro_info: {
+						items: order.products.map(product => ({
+							amount: product.quantity,
+							cost:
+								product.price *
+								product.quantity,
+							id: product.id,
+							price: product.price
+						})),
+						delivery_emails: [
+							order.mainClientInfo.email
+						]
+					},
+					server_url: `${this.configService.get<string>('HOSTS_REST')}/api/v1/webhook/liqpay`,
+					result_url: `${this.configService.get<string>('HOSTS_APP')}/payment/success`
+				})
+				break
+			case PaymentMethod.COD:
+				await this.mailService.sendOrderSuccess(order, payment)
+				await this.botService.sendOrderPurchased(order, payment)
 
-	private getPriceForMethod(method: PaymentMethod): number {
-		switch (method) {
-			case PaymentMethod.INTERNATIONAL_CARD:
-				return 499
+				providerResponse = {
+					pageUrl: `${this.configService.get<string>('HOSTS_APP')}/order/success`
+				}
 
+				break
 			default:
-				return 449
+				throw new BadRequestException(
+					'Unsupported payment provider'
+				)
+		}
+
+		return {
+			url: providerResponse?.pageUrl ?? providerResponse?.href
 		}
 	}
 
-	private getCountryCode(ip: string) {
-		const geo = lookup(ip)
+	private generateInvoiceId() {
+		const digits = 8
 
-		return geo.country
+		const min = Math.pow(10, digits - 1)
+		const max = Math.pow(10, digits) - 1
+
+		return String(Math.floor(Math.random() * (max - min + 1)) + min)
 	}
 }
