@@ -53,7 +53,7 @@ export class WebhookService {
 			this.logger.warn(`Payment created: ${payload.reference}`)
 			return await this.updateStatus(
 				payload.reference,
-				PaymentStatus.CREATED
+				PaymentStatus.
 			)
 		} else if (payload.status === 'processing') {
 			this.logger.warn(`Payment processing: ${payload.reference}`)

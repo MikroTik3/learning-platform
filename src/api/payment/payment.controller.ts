@@ -1,40 +1,15 @@
-import {
-	Body,
-	Controller,
-	Get,
-	HttpCode,
-	HttpStatus,
-	Post
-} from '@nestjs/common'
-import { ApiOkResponse, ApiOperation } from '@nestjs/swagger'
-import type { User } from '@prisma/generated'
+import { Body, Controller, HttpCode, HttpStatus, Post } from '@nestjs/common'
+import { ApiHeader, ApiOkResponse, ApiOperation } from '@nestjs/swagger'
+import { User } from '@prisma/generated'
 
-import { Authorization, Authorized, ClientIp } from '@/shared/decorators'
+import { Authorized, OptionalAuthorization } from '@/shared/decorators'
 
-import {
-	InitPaymentRequest,
-	InitPaymentResponse,
-	PaymentMethodResponse
-} from './dto'
+import { InitPaymentRequest, InitPaymentResponse } from './dto'
 import { PaymentService } from './payment.service'
 
 @Controller('payment')
 export class PaymentController {
 	public constructor(private readonly paymentService: PaymentService) {}
-
-	@ApiOperation({
-		summary: 'Get available payment methods',
-		description:
-			'Returns a list of available payment methods based on the user’s country and platform configuration.'
-	})
-	@ApiOkResponse({
-		type: [PaymentMethodResponse]
-	})
-	@Get('methods')
-	@HttpCode(HttpStatus.OK)
-	public async getAvailableMethods(@ClientIp() ip: string) {
-		return await this.paymentService.getAvailableMethods(ip)
-	}
 
 	@ApiOperation({
 		summary: 'Init Payment',
@@ -44,7 +19,11 @@ export class PaymentController {
 	@ApiOkResponse({
 		type: InitPaymentResponse
 	})
-	@Authorization()
+	@ApiHeader({
+		name: 'X-Session-Token',
+		required: true
+	})
+	@OptionalAuthorization()
 	@Post('init')
 	@HttpCode(HttpStatus.OK)
 	public async init(

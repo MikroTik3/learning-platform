@@ -2,6 +2,7 @@ import type { AppConfig } from './app.config'
 import type { HostsConfig } from './hosts.config'
 import type { KinescopeConfig } from './kinescope.config'
 import type { MailerConfig } from './mailer.config'
+import type { MonobankConfig } from './monobank.config'
 import type { QueueConfig } from './queue.config'
 import type { RedisConfig } from './redis.config'
 import type { SentinelConfig } from './sentinel.config'
@@ -22,4 +23,5 @@ export interface AllConfigs {
 	telegram: TelegramConfig
 	turnstile: TurnstileConfig
 	webauthn: WebAuthnConfig
+	monobank: MonobankConfig
 }
